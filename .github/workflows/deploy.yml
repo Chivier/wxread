@@ -17,7 +17,12 @@ on:
     #- cron: '40 3 * * *'
     # 晚间任务：北京时间每天 22:00（UTC 14:00）
     #- cron: '0 14 * * *'
-  workflow_dispatch:  # 手动触发
+  workflow_dispatch:
+    inputs:
+      read_num:
+        description: '30-second reading units; leave empty for the daily default'
+        required: false
+        type: string
 
 jobs:
   deploy:
@@ -37,11 +42,14 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
+        pip install playwright==1.63.0
+        python -m playwright install --with-deps chromium
         pip install certifi==2024.8.30 charset-normalizer==3.4.0 idna==3.10 requests==2.32.3 urllib3==2.2.3
 
     - name: Validate Python setup
       run: |
-        python -m compileall -q config.py main.py push.py log_utils.py
+        python -m compileall -q config.py main.py folder_reader.py push.py log_utils.py
+        python -m unittest discover -s tests -v
         python -m pip check
         python -c "import config, requests, urllib3"
 
@@ -73,10 +81,12 @@ jobs:
         TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
         TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         SERVERCHAN_SPT:  ${{ secrets.SERVERCHAN_SPT }}
-        READ_NUM: ${{ vars.READ_NUM }}  # 使用 Repository Variables
+        READ_NUM: ${{ inputs.read_num || vars.READ_NUM }}
+        READ_FOLDER_URL: ${{ vars.READ_FOLDER_URL }}
+        READ_FOLDER_NAME: ${{ vars.READ_FOLDER_NAME }}
 
       run: |
-        python main.py
+        python folder_reader.py
 
   keepalive-job:
     name: Keepalive Workflow
