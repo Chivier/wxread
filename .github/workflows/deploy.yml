@@ -1,5 +1,8 @@
 name: wxread
 
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ github.workflow }} # 使用工作流名称作为并发组的key
   cancel-in-progress: true    # 取消任何正在进行的相同并发组的工作流
@@ -19,20 +22,15 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-22.04
-    environment: AutoRead  # 指定环境
+    timeout-minutes: 60
 
     steps:
 
-    - name: Set DNS to Google's DNS
-      run: |
-        echo "nameserver 8.8.8.8" | sudo tee /etc/resolv.conf
-        echo "nameserver 8.8.4.4" | sudo tee -a /etc/resolv.conf
-
     - name: Checkout repository
-      uses: actions/checkout@v2
+      uses: actions/checkout@v7
 
     - name: Set up Python
-      uses: actions/setup-python@v2
+      uses: actions/setup-python@v7
       with:
         python-version: '3.10'
 
@@ -41,7 +39,32 @@ jobs:
         python -m pip install --upgrade pip
         pip install certifi==2024.8.30 charset-normalizer==3.4.0 idna==3.10 requests==2.32.3 urllib3==2.2.3
 
+    - name: Validate Python setup
+      run: |
+        python -m compileall -q config.py main.py push.py log_utils.py
+        python -m pip check
+        python -c "import config, requests, urllib3"
+
+    - name: Check login configuration
+      id: login
+      env:
+        WXREAD_CURL_BASH: ${{ secrets.WXREAD_CURL_BASH }}
+      run: |
+        if [ -z "$WXREAD_CURL_BASH" ]; then
+          echo "configured=false" >> "$GITHUB_OUTPUT"
+          echo "::notice::WXREAD_CURL_BASH is missing; setup verified, reading skipped."
+          echo "Setup verified. Reading was skipped because the WXREAD_CURL_BASH repository secret is missing." >> "$GITHUB_STEP_SUMMARY"
+        else
+          python - <<'PYTHON'
+        import config
+        if not all(config.cookies.get(key) for key in ("wr_vid", "wr_skey")):
+            raise SystemExit("The request must contain wr_vid and wr_skey cookies. Copy it as cURL (bash).")
+        PYTHON
+          echo "configured=true" >> "$GITHUB_OUTPUT"
+        fi
+
     - name: Run deployment script
+      if: steps.login.outputs.configured == 'true'
       env:
         WXREAD_CURL_BASH: ${{ secrets.WXREAD_CURL_BASH }}
         PUSH_METHOD: ${{ secrets.PUSH_METHOD }}
