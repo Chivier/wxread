@@ -1,0 +1,64 @@
+name: Reading session
+
+on:
+  workflow_call:
+    inputs:
+      session_number:
+        required: true
+        type: number
+      read_num:
+        required: false
+        default: ''
+        type: string
+      seconds:
+        required: true
+        type: number
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  read:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 200
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.10'
+      - name: Restore encrypted progress
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python state_artifacts.py
+      - name: Install runtime
+        run: |
+          pip install playwright==1.63.0 cryptography==50.0.1
+          python -m playwright install --with-deps chromium
+      - name: Validate
+        run: |
+          python -m compileall -q folder_reader.py reader_state.py state_artifacts.py
+          python -m unittest discover -s tests -v
+          python -m pip check
+      - name: Read current book
+        env:
+          WXREAD_CURL_BASH: ${{ secrets.WXREAD_CURL_BASH }}
+          WXREAD_STATE_KEY: ${{ secrets.WXREAD_STATE_KEY }}
+          READ_FOLDER_URL: ${{ vars.READ_FOLDER_URL }}
+          READ_FOLDER_NAME: ${{ vars.READ_FOLDER_NAME }}
+          READ_INITIAL_BOOK_ID: ${{ vars.READ_INITIAL_BOOK_ID }}
+          REQUIRE_READER_STATE: ${{ vars.REQUIRE_READER_STATE }}
+          DAILY_READ_SECONDS: ${{ vars.DAILY_READ_SECONDS || '21600' }}
+          SESSION_READ_SECONDS: ${{ inputs.seconds }}
+          READ_NUM: ${{ inputs.read_num }}
+        run: python folder_reader.py
+      - name: Save encrypted progress even after a reading error
+        if: always() && hashFiles('.reader-state/checkpoint.enc') != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: wxread-state-v1-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.session_number }}
+          path: .reader-state/checkpoint.enc
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 9

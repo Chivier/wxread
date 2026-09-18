@@ -1,5 +1,4 @@
 import unittest
-from datetime import date, timedelta
 from folder_reader import credentials, folder_url, eligible_books, choose_book, ReadResults
 
 
@@ -15,7 +14,7 @@ class FolderReaderTests(unittest.TestCase):
         for url in ['https://evil.example/web/shelf/archive/123', 'https://weread.qq.com/web/shelf', 'https://weread.qq.com/web/shelf/archive/123?x=1']:
             self.assertRaises(ValueError, folder_url, url)
 
-    def test_exclusions_deduplication_and_daily_rotation(self):
+    def test_exclusions_deduplication_and_persistent_selection(self):
         books = eligible_books([
             {'title': '三体全集', 'url': 'https://weread.qq.com/web/reader/a'},
             {'title': '三體2', 'url': 'https://weread.qq.com/web/reader/b'},
@@ -26,9 +25,21 @@ class FolderReaderTests(unittest.TestCase):
             {'title': 'external', 'url': 'https://evil.example/web/reader/f'},
         ])
         self.assertEqual(len(books), 2)
-        today = date(2026, 9, 18)
-        self.assertNotEqual(choose_book(books, today), choose_book(books, today + timedelta(days=1)))
-        self.assertRaises(ValueError, choose_book, [])
+        state = {'current': 'e', 'completed': []}
+        self.assertEqual(choose_book(books, state)['id'], 'e')
+        self.assertEqual(choose_book(list(reversed(books)), state)['id'], 'e')
+        state['completed'].append('e')
+        self.assertEqual(choose_book(books, state)['id'], 'd')
+        state['completed'].append('d')
+        self.assertIsNone(choose_book(books, state))
+        self.assertIsNone(choose_book([], state))
+
+    def test_new_book_does_not_replace_current_and_removed_book_can_change(self):
+        books = [{'id': 'a'}, {'id': 'b'}, {'id': 'c'}]
+        state = {'current': 'b', 'completed': []}
+        self.assertEqual(choose_book(books, state)['id'], 'b')
+        self.assertEqual(choose_book([books[0], books[2]], state)['id'], 'a')
+        self.assertEqual(choose_book(books, {'current': None}, 'c')['id'], 'c')
 
     def test_response_must_match_selected_book_and_succeed(self):
         results = ReadResults('chosen')

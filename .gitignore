@@ -5,3 +5,6 @@ __pycache__/
 # Log files
 logs/
 *.log
+
+# Encrypted runtime checkpoints
+.reader-state/

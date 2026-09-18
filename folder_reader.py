@@ -5,6 +5,7 @@ import os
 import re
 import shlex
 import sys
+import time
 from datetime import datetime
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
@@ -49,11 +50,29 @@ def eligible_books(links):
     return sorted(unique.values(), key=lambda book: book['id'])
 
 
-def choose_book(books, day=None):
-    if not books:
-        raise ValueError('The selected folder has no eligible books; nothing will be read.')
-    day = day or datetime.now(ZoneInfo('Asia/Shanghai')).date()
-    return books[day.toordinal() % len(books)]
+def choose_book(books, state, initial_id=None):
+    """Keep the same book across sessions until its end is confirmed."""
+    completed = set(state.get('completed', []))
+    pending = [book for book in books if book['id'] not in completed]
+    current = state.get('current')
+    for book in pending:
+        if book['id'] == current:
+            return book
+    if not current and initial_id:
+        for book in pending:
+            if book['id'] == initial_id:
+                return book
+    return pending[0] if pending else None
+
+
+def china_day():
+    return datetime.now(ZoneInfo('Asia/Shanghai')).date().isoformat()
+
+
+def finished_page(page):
+    # The website's endingTexts component uses this exact label for a finished
+    # book. A disabled Next button, paywall, or ongoing serial is insufficient.
+    return page.get_by_text('全书完', exact=True).is_visible()
 
 
 class ReadResults:
@@ -79,76 +98,146 @@ class ReadResults:
 
 def run():
     from playwright.sync_api import sync_playwright
+    from reader_state import Checkpoint
 
     source = folder_url(os.environ.get('READ_FOLDER_URL', ''))
-    read_num = int(os.environ.get('READ_NUM') or 40)
-    if not 1 <= read_num <= 100:
-        raise ValueError('READ_NUM must be between 1 and 100 (30 seconds per unit).')
+    units = os.environ.get('READ_NUM', '').strip()
+    session_seconds = int(units) * 30 if units else int(os.environ.get('SESSION_READ_SECONDS') or 7200)
+    daily_cap = int(os.environ.get('DAILY_READ_SECONDS') or 21600)
+    if not 30 <= session_seconds <= 10800 or not 30 <= daily_cap <= 21600:
+        raise ValueError('Session must be 30–10800 seconds; daily target 30–21600 seconds.')
     headers, cookies = credentials(os.environ.get('WXREAD_CURL_BASH', ''))
     folder_name = os.environ.get('READ_FOLDER_NAME', '').strip()
+    checkpoint = Checkpoint(
+        os.environ.get('READER_STATE_PATH', '.reader-state/checkpoint.enc'),
+        os.environ['WXREAD_STATE_KEY'], source,
+        required=os.environ.get('REQUIRE_READER_STATE', '').lower() == 'true',
+    )
+    state = checkpoint.data
+    day = china_day()
+    initial_total = state['daily_seconds'].get(day, 0)
+    target = min(session_seconds, max(0, daily_cap - initial_total))
+    logging.info('Checkpoint restored: %s; same book will resume if still in folder.', checkpoint.restored)
+    if not target:
+        logging.info('Daily target already reached; no reading started.')
+        return
+    deadline = time.monotonic() + target * 1.25 + 180
+    total_successes = 0
+    all_finished = False
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=True)
-        context = browser.new_context(
-            user_agent=headers.get('user-agent'), locale='zh-CN', timezone_id='Asia/Shanghai',
-            viewport={'width': 1440, 'height': 1000},
-        )
-        context.add_cookies([{'name': key, 'value': value, 'url': ORIGIN, 'secure': True} for key, value in cookies.items()])
+        options = dict(user_agent=headers.get('user-agent'), locale='zh-CN',
+                       timezone_id='Asia/Shanghai', viewport={'width': 1440, 'height': 1000})
+        if state.get('storage'):
+            options['storage_state'] = state['storage']
+        context = browser.new_context(**options)
+        # Once saved, use the browser's refreshed session instead of overwriting
+        # it with the original, possibly older login request.
+        if not state.get('storage'):
+            context.add_cookies([{'name': key, 'value': value, 'url': ORIGIN, 'secure': True}
+                                 for key, value in cookies.items()])
         page = context.new_page()
         page.set_default_timeout(30000)
-        page.goto(source, wait_until='domcontentloaded')
-        page.wait_for_timeout(3000)
-        heading = page.locator('h1, h2').all_text_contents()
-        if folder_name and not any(folder_name in title for title in heading):
-            raise RuntimeError('Folder not found or session expired; no reading started.')
-        links = page.locator('a[href*="/web/reader/"]').evaluate_all(
-            '(links) => links.map(a => ({url: a.href, title: a.textContent.trim()}))'
-        )
-        books = eligible_books(links)
-        book = choose_book(books)
-        # Titles and the user's shelf stay out of public Actions logs.
-        logging.info('Folder loaded: %d eligible books; selected book %d.', len(books), books.index(book) + 1)
-        results = ReadResults(book['id'])
+        try:
+            page.goto(source, wait_until='domcontentloaded')
+            page.wait_for_timeout(3000)
+            heading = page.locator('h1, h2').all_text_contents()
+            if folder_name and not any(folder_name in title for title in heading):
+                raise RuntimeError('Folder not found or session expired; no reading started.')
+            links = page.locator('a[href*="/web/reader/"]').evaluate_all(
+                '(links) => links.map(a => ({url: a.href, title: a.textContent.trim()}))'
+            )
+            books = eligible_books(links)
+            if not books:
+                raise RuntimeError('The selected folder has no eligible books; nothing will be read.')
+            logging.info('Folder loaded: %d eligible books.', len(books))
+            page.close()
+            checkpoint.save(context.storage_state())
+            while state['daily_seconds'].get(day, 0) - initial_total < target:
+                if china_day() != day:
+                    raise RuntimeError('Calendar day changed; stopping this session.')
+                if time.monotonic() >= deadline:
+                    raise RuntimeError('Session deadline exceeded before target was acknowledged.')
+                book = choose_book(books, state, os.environ.get('READ_INITIAL_BOOK_ID'))
+                if book is None:
+                    all_finished = True
+                    logging.info('All eligible books have reached the end; no books will be reread.')
+                    break
+                resumed = state['current'] == book['id']
+                state['current'] = book['id']
+                checkpoint.save(context.storage_state())
+                logging.info('Selected book %d; resuming saved book: %s.', books.index(book) + 1, resumed)
+                results = ReadResults(book['id'])
+                last_success = [time.monotonic()]
+                page = context.new_page()
+                page.set_default_timeout(30000)
 
-        def record_response(response):
-            if response.url != READ_URL:
-                return
-            try:
-                results.record(response.request.post_data_json, response.json())
-            except Exception:
-                results.failures += 1
+                def record_response(response):
+                    if response.url != READ_URL:
+                        return
+                    before_seconds, before_successes = results.reported_seconds, results.successes
+                    try:
+                        results.record(response.request.post_data_json, response.json())
+                    except Exception:
+                        results.failures += 1
+                        return
+                    if results.successes > before_successes:
+                        last_success[0] = time.monotonic()
+                        checkpoint.add_seconds(day, results.reported_seconds - before_seconds)
+                        # Atomic, encrypted checkpoint after every accepted request.
+                        checkpoint.save()
 
-        page.on('response', record_response)
-        page.goto(book['url'], wait_until='domcontentloaded')
-        next_page = page.get_by_role('button', name='下一页', exact=True)
-        next_page.wait_for(state='visible', timeout=45000)
-        logging.info('Reader ready; starting %d seconds of page reading.', read_num * 30)
-        for index in range(read_num):
-            page.wait_for_timeout(30000)
-            if results.outside_folder:
-                raise RuntimeError('Unexpected book in reading request; stopping.')
-            if results.failures >= 3:
-                raise RuntimeError('Reading API rejected requests; stopping.')
-            if index >= 2 and not results.successes:
-                raise RuntimeError('No successful reading response after 90 seconds; stopping.')
-            if not next_page.is_visible() or not next_page.is_enabled():
-                raise RuntimeError('No next page available (end of book or access required); stopping.')
-            next_page.click()
-            page.wait_for_timeout(1000)
-            logging.info('Progress %d/%d; successful responses: %d.', index + 1, read_num, results.successes)
-        # Allow any last page-turn request to finish before closing the reader.
-        page.wait_for_timeout(3000)
-        if results.outside_folder or results.failures or results.successes < 2:
-            raise RuntimeError('Reading verification failed; check login and book availability.')
-        summary = (f'Folder reading finished: {read_num * 30} seconds elapsed; '
-                   f'{results.successes} successful reading responses; '
-                   f'{results.reported_seconds:g} seconds reported in accepted requests. '
-                   'Leaderboard/challenge credit has not been independently verified.')
-        logging.info(summary)
-        if os.environ.get('GITHUB_STEP_SUMMARY'):
-            with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as output:
-                output.write(summary + '\n')
-        context.close()
-        browser.close()
+                page.on('response', record_response)
+                page.goto(book['url'], wait_until='domcontentloaded')
+                page.wait_for_timeout(3000)
+                next_page = page.get_by_role('button', name='下一页', exact=True)
+                if not finished_page(page):
+                    next_page.wait_for(state='visible', timeout=45000)
+                while state['daily_seconds'].get(day, 0) - initial_total < target:
+                    if results.outside_folder:
+                        raise RuntimeError('Unexpected book in reading request; stopping.')
+                    if results.failures >= 3 or time.monotonic() - last_success[0] > 180:
+                        raise RuntimeError('Reading requests are failing or no longer acknowledged.')
+                    if china_day() != day or time.monotonic() >= deadline:
+                        raise RuntimeError('Session deadline or calendar day boundary reached.')
+                    if finished_page(page):
+                        checkpoint.complete(book['id'])
+                        checkpoint.save(context.storage_state())
+                        logging.info('End-of-book marker confirmed; next unfinished book can be selected.')
+                        break
+                    if not next_page.is_visible() or not next_page.is_enabled():
+                        raise RuntimeError('Cannot advance and no end-of-book marker is present; book unchanged.')
+                    page.wait_for_timeout(30000)
+                    # Recheck after the wait, before any further page interaction.
+                    if results.outside_folder or results.failures >= 3:
+                        raise RuntimeError('Reading verification failed; book unchanged.')
+                    next_page.click()
+                    page.wait_for_timeout(1000)
+                    checkpoint.save(context.storage_state())
+                    logging.info('Accepted this session: %gs; today: %gs / %ds; current book unchanged.',
+                                 state['daily_seconds'].get(day, 0) - initial_total,
+                                 state['daily_seconds'].get(day, 0), daily_cap)
+                page.wait_for_timeout(1000)
+                total_successes += results.successes
+                if results.outside_folder:
+                    raise RuntimeError('Unexpected book in reading request; stopping.')
+                page.close()
+                checkpoint.save(context.storage_state())
+            accepted = state['daily_seconds'].get(day, 0) - initial_total
+            if not all_finished and (accepted < target or total_successes < 1):
+                raise RuntimeError('Reading target was not acknowledged; progress was saved for resumption.')
+            summary = (f'Session accepted: {accepted:g} seconds; '
+                       f'today: {state["daily_seconds"].get(day, 0):g}/{daily_cap} seconds; '
+                       f'{total_successes} successful responses. '
+                       'Leaderboard/challenge credit has not been independently verified.')
+            logging.info(summary)
+            if os.environ.get('GITHUB_STEP_SUMMARY'):
+                with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as output:
+                    output.write(summary + '\n')
+        finally:
+            checkpoint.save(context.storage_state())
+            context.close()
+            browser.close()
 
 
 if __name__ == '__main__':
