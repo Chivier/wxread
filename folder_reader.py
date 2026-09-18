@@ -69,6 +69,24 @@ def china_day():
     return datetime.now(ZoneInfo('Asia/Shanghai')).date().isoformat()
 
 
+class ReadingBudget:
+    """Keep the session total across midnight, with a separate daily cap."""
+    def __init__(self, state, session_seconds, daily_cap):
+        self.state = state
+        self.session_seconds = session_seconds
+        self.daily_cap = daily_cap
+        self.accepted = 0
+
+    def remaining(self, day):
+        return max(0, min(self.session_seconds - self.accepted,
+                          self.daily_cap - self.state['daily_seconds'].get(day, 0)))
+
+    def record(self, day, seconds):
+        self.accepted += seconds
+        totals = self.state['daily_seconds']
+        totals[day] = totals.get(day, 0) + seconds
+
+
 def finished_page(page):
     # The website's endingTexts component uses this exact label for a finished
     # book. A disabled Next button, paywall, or ongoing serial is insufficient.
@@ -116,14 +134,12 @@ def run():
     state = checkpoint.data
     if refresh_login_if_changed(state, os.environ.get('WXREAD_CURL_BASH', '')):
         logging.info('Login configuration changed; replacing browser session while preserving book and totals.')
-    day = china_day()
-    initial_total = state['daily_seconds'].get(day, 0)
-    target = min(session_seconds, max(0, daily_cap - initial_total))
+    budget = ReadingBudget(state, session_seconds, daily_cap)
     logging.info('Checkpoint restored: %s; same book will resume if still in folder.', checkpoint.restored)
-    if not target:
+    if not budget.remaining(china_day()):
         logging.info('Daily target already reached; no reading started.')
         return
-    deadline = time.monotonic() + target * 1.25 + 180
+    deadline = time.monotonic() + session_seconds * 1.25 + 180
     total_successes = 0
     all_finished = False
     with sync_playwright() as playwright:
@@ -157,9 +173,7 @@ def run():
             logging.info('Folder loaded: %d eligible books.', len(books))
             page.close()
             checkpoint.save(context.storage_state())
-            while state['daily_seconds'].get(day, 0) - initial_total < target:
-                if china_day() != day:
-                    raise RuntimeError('Calendar day changed; stopping this session.')
+            while budget.remaining(china_day()):
                 if time.monotonic() >= deadline:
                     raise RuntimeError('Session deadline exceeded before target was acknowledged.')
                 book = choose_book(books, state, os.environ.get('READ_INITIAL_BOOK_ID'))
@@ -187,7 +201,7 @@ def run():
                         return
                     if results.successes > before_successes:
                         last_success[0] = time.monotonic()
-                        checkpoint.add_seconds(day, results.reported_seconds - before_seconds)
+                        budget.record(china_day(), results.reported_seconds - before_seconds)
                         # Atomic, encrypted checkpoint after every accepted request.
                         checkpoint.save()
 
@@ -197,13 +211,13 @@ def run():
                 next_page = page.get_by_role('button', name='下一页', exact=True)
                 if not finished_page(page):
                     next_page.wait_for(state='visible', timeout=45000)
-                while state['daily_seconds'].get(day, 0) - initial_total < target:
+                while budget.remaining(china_day()):
                     if results.outside_folder:
                         raise RuntimeError('Unexpected book in reading request; stopping.')
                     if results.failures >= 3 or time.monotonic() - last_success[0] > 180:
                         raise RuntimeError('Reading requests are failing or no longer acknowledged.')
-                    if china_day() != day or time.monotonic() >= deadline:
-                        raise RuntimeError('Session deadline or calendar day boundary reached.')
+                    if time.monotonic() >= deadline:
+                        raise RuntimeError('Session deadline reached.')
                     if finished_page(page):
                         checkpoint.complete(book['id'])
                         checkpoint.save(context.storage_state())
@@ -215,23 +229,25 @@ def run():
                     # Recheck after the wait, before any further page interaction.
                     if results.outside_folder or results.failures >= 3:
                         raise RuntimeError('Reading verification failed; book unchanged.')
+                    if not budget.remaining(china_day()):
+                        break
                     next_page.click()
                     page.wait_for_timeout(1000)
                     checkpoint.save(context.storage_state())
                     logging.info('Accepted this session: %gs; today: %gs / %ds; current book unchanged.',
-                                 state['daily_seconds'].get(day, 0) - initial_total,
-                                 state['daily_seconds'].get(day, 0), daily_cap)
+                                 budget.accepted,
+                                 state['daily_seconds'].get(china_day(), 0), daily_cap)
                 page.wait_for_timeout(1000)
                 total_successes += results.successes
                 if results.outside_folder:
                     raise RuntimeError('Unexpected book in reading request; stopping.')
                 page.close()
                 checkpoint.save(context.storage_state())
-            accepted = state['daily_seconds'].get(day, 0) - initial_total
-            if not all_finished and (accepted < target or total_successes < 1):
+            accepted = budget.accepted
+            if not all_finished and (budget.remaining(china_day()) or total_successes < 1):
                 raise RuntimeError('Reading target was not acknowledged; progress was saved for resumption.')
             summary = (f'Session accepted: {accepted:g} seconds; '
-                       f'today: {state["daily_seconds"].get(day, 0):g}/{daily_cap} seconds; '
+                       f'today: {state["daily_seconds"].get(china_day(), 0):g}/{daily_cap} seconds; '
                        f'{total_successes} successful responses. '
                        'Leaderboard/challenge credit has not been independently verified.')
             logging.info(summary)

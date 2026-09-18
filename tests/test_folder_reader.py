@@ -1,8 +1,27 @@
 import unittest
-from folder_reader import credentials, folder_url, eligible_books, choose_book, ReadResults
+from folder_reader import credentials, folder_url, eligible_books, choose_book, ReadResults, ReadingBudget
 
 
 class FolderReaderTests(unittest.TestCase):
+    def test_midnight_preserves_session_total_and_separates_days(self):
+        totals = {'2026-09-18': 120}
+        budget = ReadingBudget({'daily_seconds': totals}, 7200, 21600)
+        budget.record('2026-09-18', 5400)
+        self.assertEqual(budget.remaining('2026-09-19'), 1800)
+        budget.record('2026-09-19', 1800)
+        self.assertEqual(budget.remaining('2026-09-19'), 0)
+        self.assertEqual(totals, {'2026-09-18': 5520, '2026-09-19': 1800})
+
+    def test_daily_cap_applies_to_resumed_and_following_sessions(self):
+        totals = {'2026-09-19': 21570}
+        budget = ReadingBudget({'daily_seconds': totals}, 7200, 21600)
+        self.assertEqual(budget.remaining('2026-09-19'), 30)
+        budget.record('2026-09-19', 30)
+        self.assertEqual(budget.remaining('2026-09-19'), 0)
+        following = ReadingBudget({'daily_seconds': totals}, 7200, 21600)
+        self.assertEqual(following.remaining('2026-09-19'), 0)
+        self.assertEqual(following.remaining('2026-09-20'), 7200)
+
     def test_cookie_header_and_bash_continuation(self):
         headers, cookies = credentials("curl 'https://weread.qq.com/web/book/read' \\\n -H 'User-Agent: test' -H 'Cookie: unrelated=private; wr_vid=123; wr_skey=abc=def'")
         self.assertEqual(cookies, {'wr_vid': '123', 'wr_skey': 'abc=def'})

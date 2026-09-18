@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from cryptography.fernet import Fernet
 from reader_state import Checkpoint, refresh_login_if_changed
-from folder_reader import finished_page
+from folder_reader import finished_page, ReadingBudget
 
 
 class FakeText:
@@ -19,6 +19,21 @@ class FakeText:
 
 
 class StateTests(unittest.TestCase):
+    def test_session_budget_survives_repeated_checkpoint_saves_and_midnight(self):
+        key = Fernet.generate_key().decode()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'checkpoint.enc'
+            checkpoint = Checkpoint(path, key, 'folder')
+            checkpoint.data['current'] = 'selected-book'
+            budget = ReadingBudget(checkpoint.data, 90, 21600)
+            for day in ['2026-09-18', '2026-09-18', '2026-09-19']:
+                budget.record(day, 30)
+                checkpoint.save()
+            restored = Checkpoint(path, key, 'folder', required=True)
+            self.assertEqual(budget.remaining('2026-09-19'), 0)
+            self.assertEqual(restored.data['daily_seconds'], {'2026-09-18': 60, '2026-09-19': 30})
+            self.assertEqual(restored.data['current'], 'selected-book')
+
     def test_roundtrip_persists_book_budget_and_session_without_plaintext(self):
         key = Fernet.generate_key().decode()
         with tempfile.TemporaryDirectory() as directory:
