@@ -1,5 +1,6 @@
 """Authenticated encryption for reader checkpoints stored in Actions artifacts."""
 import json
+import hashlib
 import os
 from pathlib import Path
 
@@ -47,3 +48,13 @@ class Checkpoint:
             self.data['completed'].append(book_id)
         if self.data['current'] == book_id:
             self.data['current'] = None
+
+
+def refresh_login_if_changed(state, curl):
+    """A new login secret resets only the browser session, never reading progress."""
+    fingerprint = hashlib.sha256(curl.encode()).hexdigest()
+    if state.get('login_fingerprint') != fingerprint:
+        state['storage'] = None
+        state['login_fingerprint'] = fingerprint
+        return True
+    return False

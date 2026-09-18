@@ -3,7 +3,7 @@ from pathlib import Path
 import tempfile
 import unittest
 from cryptography.fernet import Fernet
-from reader_state import Checkpoint
+from reader_state import Checkpoint, refresh_login_if_changed
 from folder_reader import finished_page
 
 
@@ -53,6 +53,17 @@ class StateTests(unittest.TestCase):
             self.assertRaises(ValueError, Checkpoint, path, Fernet.generate_key().decode(), 'folder')
             path.write_bytes(b'broken')
             self.assertRaises(ValueError, Checkpoint, path, key, 'folder')
+
+    def test_login_refresh_preserves_book_completion_and_daily_budget(self):
+        state = {'current': 'book', 'completed': ['old-book'], 'daily_seconds': {'2026-09-18': 7200}, 'storage': {'cookies': []}}
+        self.assertTrue(refresh_login_if_changed(state, 'fresh request'))
+        self.assertIsNone(state['storage'])
+        self.assertEqual(state['current'], 'book')
+        self.assertEqual(state['completed'], ['old-book'])
+        self.assertEqual(state['daily_seconds']['2026-09-18'], 7200)
+        state['storage'] = {'cookies': ['refreshed session']}
+        self.assertFalse(refresh_login_if_changed(state, 'fresh request'))
+        self.assertIsNotNone(state['storage'])
 
     def test_paywall_or_missing_next_page_is_not_completion(self):
         self.assertTrue(finished_page(FakeText(['全书完'])))

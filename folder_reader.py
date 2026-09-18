@@ -98,7 +98,7 @@ class ReadResults:
 
 def run():
     from playwright.sync_api import sync_playwright
-    from reader_state import Checkpoint
+    from reader_state import Checkpoint, refresh_login_if_changed
 
     source = folder_url(os.environ.get('READ_FOLDER_URL', ''))
     units = os.environ.get('READ_NUM', '').strip()
@@ -114,6 +114,8 @@ def run():
         required=os.environ.get('REQUIRE_READER_STATE', '').lower() == 'true',
     )
     state = checkpoint.data
+    if refresh_login_if_changed(state, os.environ.get('WXREAD_CURL_BASH', '')):
+        logging.info('Login configuration changed; replacing browser session while preserving book and totals.')
     day = china_day()
     initial_total = state['daily_seconds'].get(day, 0)
     target = min(session_seconds, max(0, daily_cap - initial_total))
@@ -138,6 +140,7 @@ def run():
                                  for key, value in cookies.items()])
         page = context.new_page()
         page.set_default_timeout(30000)
+        session_verified = False
         try:
             page.goto(source, wait_until='domcontentloaded')
             page.wait_for_timeout(3000)
@@ -147,6 +150,7 @@ def run():
             links = page.locator('a[href*="/web/reader/"]').evaluate_all(
                 '(links) => links.map(a => ({url: a.href, title: a.textContent.trim()}))'
             )
+            session_verified = True
             books = eligible_books(links)
             if not books:
                 raise RuntimeError('The selected folder has no eligible books; nothing will be read.')
@@ -235,7 +239,7 @@ def run():
                 with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as output:
                     output.write(summary + '\n')
         finally:
-            checkpoint.save(context.storage_state())
+            checkpoint.save(context.storage_state() if session_verified else None)
             context.close()
             browser.close()
 
