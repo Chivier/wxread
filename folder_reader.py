@@ -40,6 +40,14 @@ def folder_url(value):
     return value
 
 
+def browser_cookies(cookies):
+    # Match WeRead's Set-Cookie scope so refreshed cookies replace the seed.
+    return [{'name': name, 'value': value, 'domain': '.weread.qq.com',
+             'path': '/', 'secure': True,
+             'httpOnly': name in {'wr_vid', 'wr_skey', 'wr_rt', 'wr_pf'}}
+            for name, value in cookies.items()]
+
+
 def eligible_books(links):
     unique = {}
     for link in links:
@@ -100,6 +108,9 @@ class ReadResults:
         self.reported_seconds = 0
         self.failures = 0
         self.outside_folder = False
+        self.last_position = None
+        self.position_changes = 0
+        self.repeated_positions = 0
 
     def record(self, request, response):
         if request.get('b') != self.book_id:
@@ -107,6 +118,14 @@ class ReadResults:
             return
         if response.get('succ') == 1 and response.get('synckey') is not None:
             self.successes += 1
+            position = (request.get('c'), request.get('co'))
+            if self.last_position is not None:
+                if position == self.last_position:
+                    self.repeated_positions += 1
+                else:
+                    self.position_changes += 1
+                    self.repeated_positions = 0
+            self.last_position = position
             seconds = request.get('rt', 0)
             if isinstance(seconds, (int, float)) and 0 <= seconds <= 120:
                 self.reported_seconds += seconds
@@ -152,17 +171,17 @@ def run():
         # Once saved, use the browser's refreshed session instead of overwriting
         # it with the original, possibly older login request.
         if not state.get('storage'):
-            context.add_cookies([{'name': key, 'value': value, 'url': ORIGIN, 'secure': True}
-                                 for key, value in cookies.items()])
+            context.add_cookies(browser_cookies(cookies))
         page = context.new_page()
         page.set_default_timeout(30000)
         session_verified = False
         try:
             page.goto(source, wait_until='domcontentloaded')
-            page.wait_for_timeout(3000)
-            heading = page.locator('h1, h2').all_text_contents()
-            if folder_name and not any(folder_name in title for title in heading):
-                raise RuntimeError('Folder not found or session expired; no reading started.')
+            if folder_name:
+                try:
+                    page.get_by_role('heading').filter(has_text=folder_name).wait_for(timeout=30000)
+                except Exception:
+                    raise RuntimeError('Configured folder did not load within 30 seconds; check login and folder access.') from None
             links = page.locator('a[href*="/web/reader/"]').evaluate_all(
                 '(links) => links.map(a => ({url: a.href, title: a.textContent.trim()}))'
             )
@@ -195,10 +214,16 @@ def run():
                         return
                     before_seconds, before_successes = results.reported_seconds, results.successes
                     try:
-                        results.record(response.request.post_data_json, response.json())
+                        body = response.json()
+                        results.record(response.request.post_data_json, body)
                     except Exception:
                         results.failures += 1
+                        logging.warning('Unreadable reading response; HTTP %s.', response.status)
                         return
+                    if results.successes == before_successes:
+                        code = body.get('errCode')
+                        logging.warning('Reading response rejected; HTTP %s; numeric error code: %s.',
+                                        response.status, code if type(code) is int else 'unavailable')
                     if results.successes > before_successes:
                         last_success[0] = time.monotonic()
                         budget.record(china_day(), results.reported_seconds - before_seconds)
@@ -215,7 +240,10 @@ def run():
                     if results.outside_folder:
                         raise RuntimeError('Unexpected book in reading request; stopping.')
                     if results.failures >= 3 or time.monotonic() - last_success[0] > 180:
-                        raise RuntimeError('Reading requests are failing or no longer acknowledged.')
+                        raise RuntimeError(f'Reading stopped: {results.failures} failed responses; '
+                                           f'{results.position_changes} position changes; '
+                                           f'{results.repeated_positions} consecutive repeated positions; '
+                                           f'{budget.accepted:g} accepted seconds this session.')
                     if time.monotonic() >= deadline:
                         raise RuntimeError('Session deadline reached.')
                     if finished_page(page):
@@ -234,9 +262,10 @@ def run():
                     next_page.click()
                     page.wait_for_timeout(1000)
                     checkpoint.save(context.storage_state())
-                    logging.info('Accepted this session: %gs; today: %gs / %ds; current book unchanged.',
+                    logging.info('Accepted this session: %gs; today: %gs / %ds; position changes: %d; repeated positions: %d.',
                                  budget.accepted,
-                                 state['daily_seconds'].get(china_day(), 0), daily_cap)
+                                 state['daily_seconds'].get(china_day(), 0), daily_cap,
+                                 results.position_changes, results.repeated_positions)
                 page.wait_for_timeout(1000)
                 total_successes += results.successes
                 if results.outside_folder:

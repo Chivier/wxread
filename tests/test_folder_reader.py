@@ -1,8 +1,21 @@
 import unittest
-from folder_reader import credentials, folder_url, eligible_books, choose_book, ReadResults, ReadingBudget
+from folder_reader import credentials, folder_url, eligible_books, choose_book, ReadResults, ReadingBudget, browser_cookies
 
 
 class FolderReaderTests(unittest.TestCase):
+    def test_seed_cookies_match_server_refresh_scope(self):
+        cookies = browser_cookies({'wr_skey': 'example', 'wr_name': 'name'})
+        self.assertEqual([(c['name'], c['domain'], c['path'], c['httpOnly']) for c in cookies],
+                         [('wr_skey', '.weread.qq.com', '/', True), ('wr_name', '.weread.qq.com', '/', False)])
+
+    def test_position_changes_are_distinct_from_successful_heartbeats(self):
+        results = ReadResults('book')
+        for offset in [0, 0, 0, 120]:
+            results.record({'b': 'book', 'c': 'chapter', 'co': offset, 'rt': 30}, {'succ': 1, 'synckey': 1})
+        self.assertEqual(results.successes, 4)
+        self.assertEqual(results.position_changes, 1)
+        self.assertEqual(results.repeated_positions, 0)
+
     def test_midnight_preserves_session_total_and_separates_days(self):
         totals = {'2026-09-18': 120}
         budget = ReadingBudget({'daily_seconds': totals}, 7200, 21600)
