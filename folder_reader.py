@@ -259,7 +259,11 @@ def run():
                         raise RuntimeError('Reading verification failed; book unchanged.')
                     if not budget.remaining(china_day()):
                         break
-                    next_page.click()
+                    # The reader pauses reporting after 120s without keyboard or
+                    # pointer movement. Repeated clicks at one fixed coordinate
+                    # advance pages but do not reset that idle timer. Activate
+                    # the same Next button using its normal keyboard control.
+                    next_page.press('Enter')
                     page.wait_for_timeout(1000)
                     checkpoint.save(context.storage_state())
                     logging.info('Accepted this session: %gs; today: %gs / %ds; position changes: %d; repeated positions: %d.',
