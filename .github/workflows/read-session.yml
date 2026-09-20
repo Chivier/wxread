@@ -31,16 +31,29 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: python state_artifacts.py
+      - name: Check remaining daily budget
+        id: budget
+        env:
+          WXREAD_STATE_KEY: ${{ secrets.WXREAD_STATE_KEY }}
+          READ_FOLDER_URL: ${{ vars.READ_FOLDER_URL }}
+          REQUIRE_READER_STATE: ${{ vars.REQUIRE_READER_STATE }}
+          DAILY_READ_SECONDS: ${{ vars.DAILY_READ_SECONDS || '21600' }}
+        run: |
+          pip install cryptography==50.0.1
+          python plan_reading.py
       - name: Install runtime
+        if: steps.budget.outputs.should_read == 'true'
         run: |
           pip install playwright==1.63.0 cryptography==50.0.1
           python -m playwright install --with-deps chromium
       - name: Validate
+        if: steps.budget.outputs.should_read == 'true'
         run: |
-          python -m compileall -q folder_reader.py reader_state.py state_artifacts.py
+          python -m compileall -q folder_reader.py reader_state.py state_artifacts.py plan_reading.py
           python -m unittest discover -s tests -v
           python -m pip check
       - name: Read current book
+        if: steps.budget.outputs.should_read == 'true'
         env:
           WXREAD_CURL_BASH: ${{ secrets.WXREAD_CURL_BASH }}
           WXREAD_STATE_KEY: ${{ secrets.WXREAD_STATE_KEY }}

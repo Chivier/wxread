@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 
 ORIGIN = 'https://weread.qq.com'
 READ_URL = ORIGIN + '/web/book/read'
+AUTH_ERRORS = {-2010, -2012, -2013}
 EXCLUDED = re.compile(r'三[体體]|three[ -]body', re.IGNORECASE)
 
 
@@ -101,6 +102,37 @@ def finished_page(page):
     return page.get_by_text('全书完', exact=True).is_visible()
 
 
+def load_folder(context, source, folder_name):
+    """A normal shelf navigation lets WeRead renew expired access cookies."""
+    page = context.new_page()
+    try:
+        page.goto(source, wait_until='domcontentloaded')
+        if folder_name:
+            try:
+                page.get_by_role('heading').filter(has_text=folder_name).wait_for(timeout=30000)
+            except Exception:
+                raise RuntimeError('Folder access could not be restored. The long-lived login may need renewal.') from None
+        links = page.locator('a[href*="/web/reader/"]').evaluate_all(
+            '(links) => links.map(a => ({url: a.href, title: a.textContent.trim()}))'
+        )
+        books = eligible_books(links)
+        if not books:
+            raise RuntimeError('The selected folder has no eligible books; nothing will be read.')
+        return books
+    finally:
+        page.close()
+
+
+def wait_for_next(page, next_page, results):
+    if results.auth_expired or finished_page(page):
+        return
+    try:
+        next_page.wait_for(state='visible', timeout=45000)
+    except Exception:
+        if not results.auth_expired:
+            raise RuntimeError('Cannot advance and no end-of-book marker is present; book unchanged.') from None
+
+
 class ReadResults:
     def __init__(self, book_id):
         self.book_id = book_id
@@ -111,6 +143,7 @@ class ReadResults:
         self.last_position = None
         self.position_changes = 0
         self.repeated_positions = 0
+        self.auth_expired = False
 
     def record(self, request, response):
         if request.get('b') != self.book_id:
@@ -131,6 +164,8 @@ class ReadResults:
                 self.reported_seconds += seconds
         else:
             self.failures += 1
+            if type(response.get('errCode')) is int and response['errCode'] in AUTH_ERRORS:
+                self.auth_expired = True
 
 
 def run():
@@ -160,6 +195,7 @@ def run():
         return
     deadline = time.monotonic() + session_seconds * 1.25 + 180
     total_successes = 0
+    recovery_count = 0
     all_finished = False
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=True)
@@ -172,25 +208,11 @@ def run():
         # it with the original, possibly older login request.
         if not state.get('storage'):
             context.add_cookies(browser_cookies(cookies))
-        page = context.new_page()
-        page.set_default_timeout(30000)
         session_verified = False
         try:
-            page.goto(source, wait_until='domcontentloaded')
-            if folder_name:
-                try:
-                    page.get_by_role('heading').filter(has_text=folder_name).wait_for(timeout=30000)
-                except Exception:
-                    raise RuntimeError('Configured folder did not load within 30 seconds; check login and folder access.') from None
-            links = page.locator('a[href*="/web/reader/"]').evaluate_all(
-                '(links) => links.map(a => ({url: a.href, title: a.textContent.trim()}))'
-            )
+            books = load_folder(context, source, folder_name)
             session_verified = True
-            books = eligible_books(links)
-            if not books:
-                raise RuntimeError('The selected folder has no eligible books; nothing will be read.')
             logging.info('Folder loaded: %d eligible books.', len(books))
-            page.close()
             checkpoint.save(context.storage_state())
             while budget.remaining(china_day()):
                 if time.monotonic() >= deadline:
@@ -234,11 +256,12 @@ def run():
                 page.goto(book['url'], wait_until='domcontentloaded')
                 page.wait_for_timeout(3000)
                 next_page = page.get_by_role('button', name='下一页', exact=True)
-                if not finished_page(page):
-                    next_page.wait_for(state='visible', timeout=45000)
+                wait_for_next(page, next_page, results)
                 while budget.remaining(china_day()):
                     if results.outside_folder:
                         raise RuntimeError('Unexpected book in reading request; stopping.')
+                    if results.auth_expired:
+                        break
                     if results.failures >= 3 or time.monotonic() - last_success[0] > 180:
                         raise RuntimeError(f'Reading stopped: {results.failures} failed responses; '
                                            f'{results.position_changes} position changes; '
@@ -252,9 +275,17 @@ def run():
                         logging.info('End-of-book marker confirmed; next unfinished book can be selected.')
                         break
                     if not next_page.is_visible() or not next_page.is_enabled():
-                        raise RuntimeError('Cannot advance and no end-of-book marker is present; book unchanged.')
+                        wait_for_next(page, next_page, results)
+                        if results.auth_expired:
+                            break
+                        if finished_page(page):
+                            continue
+                        if not next_page.is_enabled():
+                            raise RuntimeError('Cannot advance and no end-of-book marker is present; book unchanged.')
                     page.wait_for_timeout(30000)
                     # Recheck after the wait, before any further page interaction.
+                    if results.auth_expired:
+                        break
                     if results.outside_folder or results.failures >= 3:
                         raise RuntimeError('Reading verification failed; book unchanged.')
                     if not budget.remaining(china_day()):
@@ -263,7 +294,12 @@ def run():
                     # pointer movement. Repeated clicks at one fixed coordinate
                     # advance pages but do not reset that idle timer. Activate
                     # the same Next button using its normal keyboard control.
-                    next_page.press('Enter')
+                    try:
+                        next_page.press('Enter')
+                    except Exception:
+                        if results.auth_expired:
+                            break
+                        raise
                     page.wait_for_timeout(1000)
                     checkpoint.save(context.storage_state())
                     logging.info('Accepted this session: %gs; today: %gs / %ds; position changes: %d; repeated positions: %d.',
@@ -275,7 +311,20 @@ def run():
                 if results.outside_folder:
                     raise RuntimeError('Unexpected book in reading request; stopping.')
                 page.close()
-                checkpoint.save(context.storage_state())
+                if results.auth_expired:
+                    # Keep the last verified refresh cookie if renewal fails.
+                    checkpoint.save()
+                    session_verified = False
+                    recovery_count += 1
+                    if recovery_count > 3:
+                        raise RuntimeError('Login recovery failed repeatedly; saved book and totals are preserved.')
+                    logging.info('Access login expired; renewing through shelf navigation (attempt %d).', recovery_count)
+                    books = load_folder(context, source, folder_name)
+                    session_verified = True
+                    checkpoint.save(context.storage_state())
+                    logging.info('Shelf access restored; resuming saved book with %gs accepted this session.', budget.accepted)
+                else:
+                    checkpoint.save(context.storage_state())
             accepted = budget.accepted
             if not all_finished and (budget.remaining(china_day()) or total_successes < 1):
                 raise RuntimeError('Reading target was not acknowledged; progress was saved for resumption.')
@@ -289,6 +338,12 @@ def run():
                     output.write(summary + '\n')
         finally:
             checkpoint.save(context.storage_state() if session_verified else None)
+            if os.environ.get('GITHUB_STEP_SUMMARY'):
+                with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as output:
+                    output.write(f'Checkpoint saved: Beijing {china_day()}, '
+                                 f'{state["daily_seconds"].get(china_day(), 0):g}/{daily_cap} seconds; '
+                                 f'{budget.accepted:g} accepted this session; '
+                                 f'{recovery_count} login recovery attempts.\n')
             context.close()
             browser.close()
 

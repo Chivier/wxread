@@ -11,8 +11,9 @@ concurrency:
 
 on:
   schedule:
-    # Beijing 01:07; three sequential sessions, up to six hours total per day.
-    - cron: '7 17 * * *'
+    # Beijing 01:07, 05:07, 09:07, 13:07, 17:07, 21:07.
+    # Catch up after interrupted/delayed runs; completed days skip the browser.
+    - cron: '7 1,5,9,13,17,21 * * *'
   workflow_dispatch:
     inputs:
       read_num:
@@ -31,7 +32,7 @@ jobs:
 
   session_2:
     needs: session_1
-    if: inputs.read_num == ''
+    if: ${{ !cancelled() && inputs.read_num == '' }}
     uses: ./.github/workflows/read-session.yml
     with:
       session_number: 2
@@ -40,7 +41,7 @@ jobs:
 
   session_3:
     needs: session_2
-    if: inputs.read_num == ''
+    if: ${{ !cancelled() && inputs.read_num == '' }}
     uses: ./.github/workflows/read-session.yml
     with:
       session_number: 3
