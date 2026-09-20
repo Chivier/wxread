@@ -1,4 +1,5 @@
 import os
+import io
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
@@ -8,7 +9,7 @@ from unittest.mock import patch
 from cryptography.fernet import Fernet
 import folder_reader
 from reader_state import Checkpoint, refresh_login_if_changed
-from plan_reading import remaining_today
+from plan_reading import remaining_today, main as check_budget
 
 
 class FakePage:
@@ -109,6 +110,7 @@ class RecoveryTests(unittest.TestCase):
             with patch.dict(os.environ, env, clear=True), \
                  patch.dict('sys.modules', {'playwright.sync_api': api}), \
                  patch.object(folder_reader, 'china_day', return_value='2026-09-20'), \
+                 patch.object(folder_reader.logging, 'warning'), \
                  patch.object(folder_reader, 'finished_page', return_value=False), \
                  patch.object(folder_reader, 'load_folder', return_value=[book]) as load:
                 if always_expired:
@@ -136,6 +138,27 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(remaining_today(state, '2026-09-21', 21600), 21600)
         state['daily_seconds']['2026-09-20'] = 11310
         self.assertEqual(remaining_today(state, '2026-09-20', 21600), 10290)
+
+    def test_final_audit_rejects_incomplete_days_and_skip_plan_disables_reading(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'state.enc'
+            output = Path(directory) / 'outputs'
+            key = Fernet.generate_key().decode()
+            source = 'https://weread.qq.com/web/shelf/archive/123'
+            checkpoint = Checkpoint(path, key, source)
+            checkpoint.data['daily_seconds'] = {'2026-09-20': 11310}
+            checkpoint.save()
+            env = dict(READER_STATE_PATH=str(path), WXREAD_STATE_KEY=key,
+                       READ_FOLDER_URL=source, REQUIRE_READER_STATE='true', GITHUB_OUTPUT=str(output))
+            with patch.dict(os.environ, env, clear=True), \
+                 patch('plan_reading.china_day', return_value='2026-09-20'), \
+                 patch('sys.stdout', new_callable=io.StringIO):
+                with self.assertRaisesRegex(SystemExit, '10290 seconds remain'):
+                    check_budget(require_target=True)
+                checkpoint.data['daily_seconds']['2026-09-20'] = 21600
+                checkpoint.save()
+                check_budget(require_target=True)
+            self.assertTrue(output.read_text().endswith('should_read=false\n'))
 
 
 if __name__ == '__main__':

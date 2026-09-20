@@ -48,10 +48,35 @@ jobs:
       seconds: 7200
     secrets: inherit
 
+  verify_daily_target:
+    name: Verify daily target
+    needs: [session_1, session_2, session_3]
+    if: ${{ !cancelled() && inputs.read_num == '' }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.10'
+      - name: Restore encrypted progress
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python state_artifacts.py
+      - name: Require six hours in saved daily total
+        env:
+          WXREAD_STATE_KEY: ${{ secrets.WXREAD_STATE_KEY }}
+          READ_FOLDER_URL: ${{ vars.READ_FOLDER_URL }}
+          REQUIRE_READER_STATE: 'true'
+          DAILY_READ_SECONDS: ${{ vars.DAILY_READ_SECONDS || '21600' }}
+        run: |
+          pip install cryptography==50.0.1
+          python plan_reading.py --require-target
+
   keepalive-job:
     name: Keepalive Workflow
     if: always()
-    needs: [session_1, session_2, session_3]
+    needs: [session_1, session_2, session_3, verify_daily_target]
     runs-on: ubuntu-22.04
     permissions:
       actions: write

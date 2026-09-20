@@ -11,7 +11,7 @@ def remaining_today(state, day, cap):
     return max(0, cap - state['daily_seconds'].get(day, 0))
 
 
-def main():
+def main(require_target=False):
     checkpoint = Checkpoint(
         os.environ.get('READER_STATE_PATH', '.reader-state/checkpoint.enc'),
         os.environ['WXREAD_STATE_KEY'], folder_url(os.environ['READ_FOLDER_URL']),
@@ -28,10 +28,16 @@ def main():
     if os.environ.get('GITHUB_STEP_SUMMARY'):
         with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as output:
             output.write(summary + '\n')
+    if require_target and remaining:
+        raise SystemExit(f'Daily target incomplete: {remaining:g} seconds remain; a later scheduled run must catch up.')
 
 
 if __name__ == '__main__':
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--require-target', action='store_true')
+    args = parser.parse_args()
     try:
-        main()
+        main(require_target=args.require_target)
     except Exception:
         raise SystemExit('Daily budget check failed; refusing to reset or ignore saved progress.') from None
