@@ -40,6 +40,10 @@ Settings → Secrets and variables → Actions：
 
 登录失效时 `Login alert` 会在 GitHub Issues 中创建一条指派给仓库主人的提醒；重复失败只保留同一条。一次实际运行阅读器的成功短测会自动关闭提醒。提醒正文只包含故障运行链接与恢复步骤，不包含登录凭据、书名或检查点内容。此提醒依赖工作流已经被 GitHub 触发；GitHub 计划任务完全漏触发时，需要额外的外部监控才能发现。
 
+Artoria 上的 `wxread-watchdog.timer` 每两小时运行一次 `watchdog.py`，检查最近一次 GitHub `schedule` 运行是否超过 8 小时。漏触发时创建一条单独的 GitHub Issue，恢复后关闭。它使用 Artoria 已有的 `gh` 登录，不复制或存放新的令牌。若 Artoria 自身停机或 GitHub API 无法访问，这个检查也无法发出提醒；应定期检查 timer 状态。
+
+部署文件保存在 `ops/wxread-watchdog.service` 与 `ops/wxread-watchdog.timer`。在 Artoria 将 `watchdog.py`、`alert_issue.py` 放入 `~/.local/share/wxread-watchdog/`，将两个 unit 放入 `~/.config/systemd/user/`，然后运行 `systemctl --user daemon-reload`、`systemctl --user enable --now wxread-watchdog.timer` 和 `systemctl --user start wxread-watchdog.service`。用 `systemctl --user status wxread-watchdog.service` 与 `systemctl --user list-timers wxread-watchdog.timer` 验证。`Linger=yes` 使用户退出 SSH 后 timer 仍保持运行。
+
 普通访问令牌过期（`-2010`、`-2012`、`-2013`）由书架正常导航自动续期，不需要每次更换 Secret。只有长期登录凭据也被撤销、或正常页面不能恢复访问时，才需要重新登录。失败任务仍上传已确认进度，并在 Actions Summary 中列出当日累计、该段累计和续期次数。自动恢复和补跑提高连续性，但不能保证账号永不失效或 GitHub 每次调度准时。
 
 完整运行最后还有 `Verify daily target` 检查：当日累计不足目标会明确报失败并显示剩余秒数，不会仅因三个步骤结束就显示已达标。短测不执行此检查。这里核对的是成功请求累计，仍需与微信读书 App 的实际入账区分。
