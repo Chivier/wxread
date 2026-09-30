@@ -41,7 +41,7 @@ Settings → Secrets and variables → Actions：
 
 登录失效时 `Login alert` 会在 GitHub Issues 中创建一条指派给仓库主人的提醒；重复失败只保留同一条。新 Issue 会触发 `wxread alert delivery`，通过 `PUSHPLUS_TOKEN` 向本人微信发送 PushPlus 提醒。PushPlus 返回业务码 200 后，Issue 才会记下“接口已接收”；若发送失败，下次检查会重试。一次实际运行阅读器的成功短测会自动关闭提醒。提醒正文包含故障运行链接与恢复步骤，微信消息只包含故障类型与 Issue 链接；两者都不包含登录凭据、书名或检查点内容。PushPlus 接口接收请求后异步投递，业务码 200 并不等于微信最终收到；可在 PushPlus 后台查看发送结果。此提醒依赖工作流已经被 GitHub 触发；GitHub 计划任务完全漏触发时，需要额外的外部监控才能发现。
 
-Artoria 上的 `wxread-watchdog.timer` 每两小时运行一次 `watchdog.py`，检查最近一次 GitHub `schedule` 运行是否超过 8 小时。漏触发时创建一条单独的 GitHub Issue，并触发同一条 PushPlus 通道；恢复后关闭 Issue。它使用 Artoria 已有的 `gh` 登录，PushPlus token 只保存在 GitHub Secret，不复制到 Artoria。若 Artoria 自身停机或 GitHub API 无法访问，这个检查也无法发出提醒；应定期检查 timer 状态。
+Artoria 上的 `wxread-watchdog.timer` 每两小时运行一次 `watchdog.py`，检查最近一次 GitHub `schedule` 运行是否超过 8 小时。漏触发时创建一条单独的 GitHub Issue，触发同一条 PushPlus 通道，并发起一次完整补跑。Issue 评论记录补跑已被 GitHub 接收，监控器重试失败的派发，但不会对同一事故无限补跑。补跑和正常计划任务共用串行锁与每日时长上限；计划调度恢复后关闭 Issue。它使用 Artoria 已有的 `gh` 登录，PushPlus token 只保存在 GitHub Secret，不复制到 Artoria。若 Artoria 自身停机或 GitHub API 无法访问，这个检查也无法发出提醒；应定期检查 timer 状态。
 
 部署文件保存在 `ops/wxread-watchdog.service` 与 `ops/wxread-watchdog.timer`。在 Artoria 将 `watchdog.py`、`alert_issue.py` 放入 `~/.local/share/wxread-watchdog/`，将两个 unit 放入 `~/.config/systemd/user/`，然后运行 `systemctl --user daemon-reload`、`systemctl --user enable --now wxread-watchdog.timer` 和 `systemctl --user start wxread-watchdog.service`。用 `systemctl --user status wxread-watchdog.service` 与 `systemctl --user list-timers wxread-watchdog.timer` 验证。`Linger=yes` 使用户退出 SSH 后 timer 仍保持运行。
 
