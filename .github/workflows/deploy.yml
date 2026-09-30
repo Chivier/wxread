@@ -32,7 +32,7 @@ jobs:
 
   session_2:
     needs: session_1
-    if: ${{ !cancelled() && inputs.read_num == '' }}
+    if: ${{ !cancelled() && inputs.read_num == '' && needs.session_1.outputs.login_required != 'true' }}
     uses: ./.github/workflows/read-session.yml
     with:
       session_number: 2
@@ -40,8 +40,8 @@ jobs:
     secrets: inherit
 
   session_3:
-    needs: session_2
-    if: ${{ !cancelled() && inputs.read_num == '' }}
+    needs: [session_1, session_2]
+    if: ${{ !cancelled() && inputs.read_num == '' && needs.session_2.result != 'skipped' && needs.session_1.outputs.login_required != 'true' && needs.session_2.outputs.login_required != 'true' }}
     uses: ./.github/workflows/read-session.yml
     with:
       session_number: 3

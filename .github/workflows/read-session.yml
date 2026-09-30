@@ -13,6 +13,10 @@ on:
       seconds:
         required: true
         type: number
+    outputs:
+      login_required:
+        description: Whether WeRead needs a fresh interactive login
+        value: ${{ jobs.read.outputs.login_required }}
 
 permissions:
   contents: read
@@ -22,6 +26,8 @@ jobs:
   read:
     runs-on: ubuntu-22.04
     timeout-minutes: 200
+    outputs:
+      login_required: ${{ steps.reader.outputs.login_required }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -53,6 +59,7 @@ jobs:
           python -m unittest discover -s tests -v
           python -m pip check
       - name: Read current book
+        id: reader
         if: steps.budget.outputs.should_read == 'true'
         env:
           WXREAD_CURL_BASH: ${{ secrets.WXREAD_CURL_BASH }}

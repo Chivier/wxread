@@ -88,6 +88,31 @@ class FakeBrowser:
 
 
 class RecoveryTests(unittest.TestCase):
+    def test_signed_out_shelf_is_classified_without_losing_checkpoint(self):
+        class SignedOutPage:
+            def goto(self, url, **kwargs):
+                pass
+
+            def get_by_role(self, role, **kwargs):
+                self.role = role
+                return self
+
+            def filter(self, **kwargs):
+                return self
+
+            def wait_for(self, **kwargs):
+                raise TimeoutError('folder heading absent')
+
+            def is_visible(self):
+                return self.role == 'button'
+
+            def close(self):
+                pass
+
+        context = SimpleNamespace(new_page=SignedOutPage)
+        with self.assertRaises(folder_reader.LoginRequiredError):
+            folder_reader.load_folder(context, 'https://weread.qq.com/web/shelf/archive/123', 'Folder')
+
     def exercise_recovery(self, always_expired=False):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'checkpoint.enc'

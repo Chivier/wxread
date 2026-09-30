@@ -16,6 +16,14 @@ AUTH_ERRORS = {-2010, -2012, -2013}
 EXCLUDED = re.compile(r'三[体體]|three[ -]body', re.IGNORECASE)
 
 
+class LoginRequiredError(RuntimeError):
+    """The saved WeRead login can no longer open the user's shelf."""
+
+
+def login_required(page):
+    return page.get_by_role('button', name='登录', exact=True).is_visible()
+
+
 def credentials(curl):
     """Parse a captured request as data; never execute the shell command."""
     tokens = shlex.split(curl.replace('\\\n', ' '))
@@ -111,12 +119,16 @@ def load_folder(context, source, folder_name):
             try:
                 page.get_by_role('heading').filter(has_text=folder_name).wait_for(timeout=30000)
             except Exception:
-                raise RuntimeError('Folder access could not be restored. The long-lived login may need renewal.') from None
+                if login_required(page):
+                    raise LoginRequiredError('WeRead login required. Refresh WXREAD_CURL_BASH after signing in.') from None
+                raise RuntimeError('Folder heading was not found; verify the configured folder and page layout.') from None
         links = page.locator('a[href*="/web/reader/"]').evaluate_all(
             '(links) => links.map(a => ({url: a.href, title: a.textContent.trim()}))'
         )
         books = eligible_books(links)
         if not books:
+            if login_required(page):
+                raise LoginRequiredError('WeRead login required. Refresh WXREAD_CURL_BASH after signing in.')
             raise RuntimeError('The selected folder has no eligible books; nothing will be read.')
         return books
     finally:
@@ -317,7 +329,7 @@ def run():
                     session_verified = False
                     recovery_count += 1
                     if recovery_count > 3:
-                        raise RuntimeError('Login recovery failed repeatedly; saved book and totals are preserved.')
+                        raise LoginRequiredError('Login recovery failed repeatedly; saved book and totals are preserved.')
                     logging.info('Access login expired; renewing through shelf navigation (attempt %d).', recovery_count)
                     books = load_folder(context, source, folder_name)
                     session_verified = True
@@ -357,4 +369,11 @@ if __name__ == '__main__':
         logging.error('Folder reader stopped (%s). No fallback book was used.', type(error).__name__)
         if isinstance(error, (ValueError, RuntimeError)):
             logging.error('%s', error)
+        if isinstance(error, LoginRequiredError):
+            if os.environ.get('GITHUB_OUTPUT'):
+                with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+                    output.write('login_required=true\n')
+            if os.environ.get('GITHUB_STEP_SUMMARY'):
+                with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as output:
+                    output.write('WeRead login required. Sign in, refresh WXREAD_CURL_BASH, then run a short test.\n')
         sys.exit(1)
