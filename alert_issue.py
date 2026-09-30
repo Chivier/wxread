@@ -5,6 +5,17 @@ import subprocess
 
 TITLE = '微信读书自动阅读需要重新登录'
 MARKER = '<!-- wxread-login-alert-v1 -->'
+PUSHPLUS_MARKER = '<!-- wxread-pushplus-accepted-v1 -->'
+
+
+def dispatch_alert(repo, issue_number):
+    comments = api(f'repos/{repo}/issues/{issue_number}/comments?per_page=100')
+    if any(PUSHPLUS_MARKER in (comment.get('body') or '') for comment in comments):
+        return
+    api(f'repos/{repo}/dispatches', 'POST', {
+        'event_type': 'wxread_alert',
+        'client_payload': {'issue_number': issue_number},
+    })
 
 
 def api(path, method='GET', payload=None):
@@ -38,6 +49,7 @@ def main():
     if login_required:
         if existing:
             print(f'Login alert already open: #{existing[0]["number"]}.')
+            dispatch_alert(repo, existing[0]['number'])
             return
         run_url = f'https://github.com/{repo}/actions/runs/{os.environ["GITHUB_RUN_ID"]}'
         body = (f'{MARKER}\n\n自动阅读检测到微信读书登录失效。请在本人浏览器完成登录，'
@@ -48,6 +60,7 @@ def main():
             'title': TITLE, 'body': body, 'assignees': [repo.split('/', 1)[0]],
         })
         print(f'Created login alert: #{issue["number"]}.')
+        dispatch_alert(repo, issue['number'])
     elif reader_success:
         for issue in existing:
             api(f'repos/{repo}/issues/{issue["number"]}', 'PATCH', {'state': 'closed'})

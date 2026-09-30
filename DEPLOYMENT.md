@@ -26,6 +26,7 @@ Settings → Secrets and variables → Actions：
 | --- | --- | --- |
 | Secret | `WXREAD_CURL_BASH` | 从本人阅读页面复制的 cURL (bash)，用于首次登录 |
 | Secret | `WXREAD_STATE_KEY` | 检查点加密密钥，不能随意更换 |
+| Secret | `PUSHPLUS_TOKEN` | 从 1Password 读取的 PushPlus 用户 token，仅用于故障微信提醒 |
 | Variable | `READ_FOLDER_URL` | 指定文件夹的完整网页地址 |
 | Variable | `READ_FOLDER_NAME` | 校验文件夹名称 |
 | Variable | `READ_INITIAL_BOOK_ID` | 仅首次初始化时选择哪一本；已有进度优先 |
@@ -38,9 +39,9 @@ Settings → Secrets and variables → Actions：
 
 若书架显示「登录」，任务会明确标记 `login_required` 并停止后续阅读段，避免重复安装浏览器和运行失败任务。需要先在本人浏览器完成登录，再从本人阅读页面重新采集 `read` 请求并只更新 `WXREAD_CURL_BASH`；不要更换 `WXREAD_STATE_KEY` 或删除检查点。更新后先用 `read_num=2` 短测，确认文件夹加载、同一本书继续、成功回执及累计秒数，再让定时运行继续。检查点记录的成功请求秒数仍需和 App 中实际入账分开核对。
 
-登录失效时 `Login alert` 会在 GitHub Issues 中创建一条指派给仓库主人的提醒；重复失败只保留同一条。一次实际运行阅读器的成功短测会自动关闭提醒。提醒正文只包含故障运行链接与恢复步骤，不包含登录凭据、书名或检查点内容。此提醒依赖工作流已经被 GitHub 触发；GitHub 计划任务完全漏触发时，需要额外的外部监控才能发现。
+登录失效时 `Login alert` 会在 GitHub Issues 中创建一条指派给仓库主人的提醒；重复失败只保留同一条。新 Issue 会触发 `wxread alert delivery`，通过 `PUSHPLUS_TOKEN` 向本人微信发送 PushPlus 提醒。PushPlus 返回业务码 200 后，Issue 才会记下“接口已接收”；若发送失败，下次检查会重试。一次实际运行阅读器的成功短测会自动关闭提醒。提醒正文包含故障运行链接与恢复步骤，微信消息只包含故障类型与 Issue 链接；两者都不包含登录凭据、书名或检查点内容。PushPlus 接口接收请求后异步投递，业务码 200 并不等于微信最终收到；可在 PushPlus 后台查看发送结果。此提醒依赖工作流已经被 GitHub 触发；GitHub 计划任务完全漏触发时，需要额外的外部监控才能发现。
 
-Artoria 上的 `wxread-watchdog.timer` 每两小时运行一次 `watchdog.py`，检查最近一次 GitHub `schedule` 运行是否超过 8 小时。漏触发时创建一条单独的 GitHub Issue，恢复后关闭。它使用 Artoria 已有的 `gh` 登录，不复制或存放新的令牌。若 Artoria 自身停机或 GitHub API 无法访问，这个检查也无法发出提醒；应定期检查 timer 状态。
+Artoria 上的 `wxread-watchdog.timer` 每两小时运行一次 `watchdog.py`，检查最近一次 GitHub `schedule` 运行是否超过 8 小时。漏触发时创建一条单独的 GitHub Issue，并触发同一条 PushPlus 通道；恢复后关闭 Issue。它使用 Artoria 已有的 `gh` 登录，PushPlus token 只保存在 GitHub Secret，不复制到 Artoria。若 Artoria 自身停机或 GitHub API 无法访问，这个检查也无法发出提醒；应定期检查 timer 状态。
 
 部署文件保存在 `ops/wxread-watchdog.service` 与 `ops/wxread-watchdog.timer`。在 Artoria 将 `watchdog.py`、`alert_issue.py` 放入 `~/.local/share/wxread-watchdog/`，将两个 unit 放入 `~/.config/systemd/user/`，然后运行 `systemctl --user daemon-reload`、`systemctl --user enable --now wxread-watchdog.timer` 和 `systemctl --user start wxread-watchdog.service`。用 `systemctl --user status wxread-watchdog.service` 与 `systemctl --user list-timers wxread-watchdog.timer` 验证。`Linger=yes` 使用户退出 SSH 后 timer 仍保持运行。
 

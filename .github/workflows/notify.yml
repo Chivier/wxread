@@ -1,0 +1,27 @@
+name: wxread alert delivery
+
+on:
+  repository_dispatch:
+    types: [wxread_alert]
+  workflow_dispatch:
+    inputs:
+      test_only:
+        description: Send a diagnostic PushPlus message
+        required: false
+        type: boolean
+
+jobs:
+  pushplus:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v7
+      - name: Send PushPlus message
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+          ISSUE_NUMBER: ${{ github.event.client_payload.issue_number }}
+          TEST_ONLY: ${{ inputs.test_only || 'false' }}
+        run: python notify_pushplus.py

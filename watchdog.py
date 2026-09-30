@@ -2,7 +2,7 @@
 from datetime import datetime, timedelta, timezone
 import os
 
-from alert_issue import api
+from alert_issue import api, dispatch_alert
 
 TITLE = '微信读书定时任务超过 8 小时未触发'
 MARKER = '<!-- wxread-schedule-watchdog-v1 -->'
@@ -37,9 +37,13 @@ def main(now=None):
             'title': TITLE, 'body': body, 'assignees': [repo.split('/', 1)[0]],
         })
         print(f'Created missing-schedule alert: #{created["number"]}.')
+        dispatch_alert(repo, created['number'])
     elif not stale and issue:
         api(f'repos/{repo}/issues/{issue["number"]}', 'PATCH', {'state': 'closed'})
         print(f'Closed recovered schedule alert: #{issue["number"]}.')
+    elif stale and issue:
+        dispatch_alert(repo, issue['number'])
+        print(f'Schedule status: stale; alert: open (#{issue["number"]}).')
     else:
         print(f'Schedule status: {"stale" if stale else "fresh"}; alert: {"open" if issue else "none"}.')
 

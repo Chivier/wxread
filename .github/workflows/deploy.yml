@@ -79,7 +79,7 @@ jobs:
     if: ${{ always() && !cancelled() && (needs.session_1.outputs.login_required == 'true' || needs.session_2.outputs.login_required == 'true' || needs.session_3.outputs.login_required == 'true' || needs.session_1.outputs.reader_success == 'true' || needs.session_2.outputs.reader_success == 'true' || needs.session_3.outputs.reader_success == 'true') }}
     runs-on: ubuntu-22.04
     permissions:
-      contents: read
+      contents: write
       issues: write
     steps:
       - uses: actions/checkout@v7
