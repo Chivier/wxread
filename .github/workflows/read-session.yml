@@ -17,6 +17,9 @@ on:
       login_required:
         description: Whether WeRead needs a fresh interactive login
         value: ${{ jobs.read.outputs.login_required }}
+      reader_success:
+        description: Whether the reader ran and verified shelf access
+        value: ${{ jobs.read.outputs.reader_success }}
 
 permissions:
   contents: read
@@ -28,6 +31,7 @@ jobs:
     timeout-minutes: 200
     outputs:
       login_required: ${{ steps.reader.outputs.login_required }}
+      reader_success: ${{ steps.reader.outcome == 'success' }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7

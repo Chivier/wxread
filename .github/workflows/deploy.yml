@@ -73,6 +73,23 @@ jobs:
           pip install cryptography==50.0.1
           python plan_reading.py --require-target
 
+  login_alert:
+    name: Login alert
+    needs: [session_1, session_2, session_3]
+    if: ${{ always() && !cancelled() && (needs.session_1.outputs.login_required == 'true' || needs.session_2.outputs.login_required == 'true' || needs.session_3.outputs.login_required == 'true' || needs.session_1.outputs.reader_success == 'true' || needs.session_2.outputs.reader_success == 'true' || needs.session_3.outputs.reader_success == 'true') }}
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v7
+      - name: Open or close login alert
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LOGIN_REQUIRED: ${{ needs.session_1.outputs.login_required == 'true' || needs.session_2.outputs.login_required == 'true' || needs.session_3.outputs.login_required == 'true' }}
+          READER_SUCCESS: ${{ needs.session_1.outputs.reader_success == 'true' || needs.session_2.outputs.reader_success == 'true' || needs.session_3.outputs.reader_success == 'true' }}
+        run: python alert_issue.py
+
   keepalive-job:
     name: Keepalive Workflow
     if: always()
