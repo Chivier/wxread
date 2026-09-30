@@ -11,7 +11,8 @@ URL = 'https://www.pushplus.plus/send'
 
 def send(token, title, content):
     request = Request(URL, data=json.dumps({
-        'token': token, 'title': title, 'content': content, 'template': 'txt',
+        'token': token, 'title': title, 'content': content,
+        'template': 'txt', 'channel': 'wechat',
     }).encode('utf-8'), headers={'Content-Type': 'application/json'}, method='POST')
     with urlopen(request, timeout=20) as response:
         result = json.load(response)
