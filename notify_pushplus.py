@@ -4,6 +4,7 @@ import os
 from urllib.request import Request, urlopen
 
 from alert_issue import MARKER as LOGIN_MARKER, PUSHPLUS_MARKER, api
+from alert_target import MARKER as TARGET_MARKER
 from watchdog import MARKER as SCHEDULE_MARKER
 
 URL = 'https://www.pushplus.plus/send'
@@ -39,6 +40,8 @@ def main():
         title = '微信读书需要重新登录'
     elif SCHEDULE_MARKER in body:
         title = '微信读书定时任务未触发'
+    elif TARGET_MARKER in body:
+        title = '微信读书每日目标未达成'
     else:
         raise RuntimeError('Issue is not a recognized WeRead alert.')
     comments = api(f'repos/{repo}/issues/{number}/comments?per_page=100')

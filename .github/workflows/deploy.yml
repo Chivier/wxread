@@ -90,6 +90,23 @@ jobs:
           READER_SUCCESS: ${{ needs.session_1.outputs.reader_success == 'true' || needs.session_2.outputs.reader_success == 'true' || needs.session_3.outputs.reader_success == 'true' }}
         run: python alert_issue.py
 
+  target_alert:
+    name: Daily target alert
+    needs: [session_1, session_2, session_3, verify_daily_target]
+    if: ${{ always() && !cancelled() && inputs.read_num == '' && (needs.verify_daily_target.result == 'success' || needs.verify_daily_target.result == 'failure') }}
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+      issues: write
+    steps:
+      - uses: actions/checkout@v7
+      - name: Open or close daily-target alert
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SUCCESS: ${{ needs.verify_daily_target.result == 'success' }}
+          LOGIN_REQUIRED: ${{ needs.session_1.outputs.login_required == 'true' || needs.session_2.outputs.login_required == 'true' || needs.session_3.outputs.login_required == 'true' }}
+        run: python alert_target.py
+
   keepalive-job:
     name: Keepalive Workflow
     if: always()
