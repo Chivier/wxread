@@ -67,10 +67,12 @@ def eligible_books(links):
     return sorted(unique.values(), key=lambda book: book['id'])
 
 
-def choose_book(books, state, initial_id=None):
+def choose_book(books, state, initial_id=None, day=None):
     """Keep the same book across sessions until its end is confirmed."""
     completed = set(state.get('completed', []))
-    pending = [book for book in books if book['id'] not in completed]
+    # A serial already read to its latest chapter has nothing more for that day.
+    waiting = {book_id for book_id, parked in state.get('caught_up', {}).items() if parked == day}
+    pending = [book for book in books if book['id'] not in completed and book['id'] not in waiting]
     current = state.get('current')
     for book in pending:
         if book['id'] == current:
@@ -105,9 +107,16 @@ class ReadingBudget:
 
 
 def finished_page(page):
-    # The website's endingTexts component uses this exact label for a finished
-    # book. A disabled Next button, paywall, or ongoing serial is insufficient.
-    return page.get_by_text('全书完', exact=True).is_visible()
+    # The back cover of a finished book carries this class and the spaced label
+    # "全 书 完". A disabled Next button, paywall, or ongoing serial is insufficient.
+    return (page.locator('.readerFooter_ending_finish').first.is_visible()
+            or page.get_by_text('全书完', exact=True).first.is_visible())
+
+
+def caught_up_page(page):
+    # An ongoing serial ends its latest chapter with a "未 完 待 续" back cover:
+    # no Next button and no end-of-book marker until new chapters are published.
+    return page.locator('.readerFooter_ending_continue').first.is_visible()
 
 
 def load_folder(context, source, folder_name):
@@ -136,12 +145,13 @@ def load_folder(context, source, folder_name):
 
 
 def wait_for_next(page, next_page, results):
-    if results.auth_expired or finished_page(page):
+    if results.auth_expired or finished_page(page) or caught_up_page(page):
         return
     try:
         next_page.wait_for(state='visible', timeout=45000)
     except Exception:
-        if not results.auth_expired:
+        # The back cover may render after the first check.
+        if not (results.auth_expired or finished_page(page) or caught_up_page(page)):
             raise RuntimeError('Cannot advance and no end-of-book marker is present; book unchanged.') from None
 
 
@@ -229,10 +239,10 @@ def run():
             while budget.remaining(china_day()):
                 if time.monotonic() >= deadline:
                     raise RuntimeError('Session deadline exceeded before target was acknowledged.')
-                book = choose_book(books, state, os.environ.get('READ_INITIAL_BOOK_ID'))
+                book = choose_book(books, state, os.environ.get('READ_INITIAL_BOOK_ID'), china_day())
                 if book is None:
                     all_finished = True
-                    logging.info('All eligible books have reached the end; no books will be reread.')
+                    logging.info('Every eligible book is finished or waiting for new chapters; no books will be reread.')
                     break
                 resumed = state['current'] == book['id']
                 state['current'] = book['id']
@@ -286,11 +296,16 @@ def run():
                         checkpoint.save(context.storage_state())
                         logging.info('End-of-book marker confirmed; next unfinished book can be selected.')
                         break
+                    if caught_up_page(page):
+                        checkpoint.park(book['id'], china_day())
+                        checkpoint.save(context.storage_state())
+                        logging.info('Serial has no newer chapter; not finished, another unfinished book is read for the rest of today.')
+                        break
                     if not next_page.is_visible() or not next_page.is_enabled():
                         wait_for_next(page, next_page, results)
                         if results.auth_expired:
                             break
-                        if finished_page(page):
+                        if finished_page(page) or caught_up_page(page):
                             continue
                         if not next_page.is_enabled():
                             raise RuntimeError('Cannot advance and no end-of-book marker is present; book unchanged.')

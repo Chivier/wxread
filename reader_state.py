@@ -49,6 +49,12 @@ class Checkpoint:
         if self.data['current'] == book_id:
             self.data['current'] = None
 
+    def park(self, book_id, day):
+        """Skip a serial at its latest chapter for the rest of that Beijing day."""
+        waiting = self.data.get('caught_up', {})
+        self.data['caught_up'] = {**{key: value for key, value in waiting.items() if value == day},
+                                  book_id: day}
+
 
 def refresh_login_if_changed(state, curl):
     """A new login secret resets only the browser session, never reading progress."""

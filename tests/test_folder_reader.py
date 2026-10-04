@@ -73,6 +73,13 @@ class FolderReaderTests(unittest.TestCase):
         self.assertEqual(choose_book([books[0], books[2]], state)['id'], 'a')
         self.assertEqual(choose_book(books, {'current': None}, 'c')['id'], 'c')
 
+    def test_caught_up_serial_is_skipped_only_for_that_day(self):
+        books = [{'id': 'a'}, {'id': 'b'}]
+        state = {'current': 'b', 'completed': [], 'caught_up': {'b': '2026-10-04'}}
+        self.assertEqual(choose_book(books, state, day='2026-10-04')['id'], 'a')
+        self.assertEqual(choose_book(books, state, day='2026-10-05')['id'], 'b')
+        self.assertIsNone(choose_book([books[1]], state, day='2026-10-04'))
+
     def test_response_must_match_selected_book_and_succeed(self):
         results = ReadResults('chosen')
         results.record({'b': 'chosen', 'rt': 30}, {'succ': 1, 'synckey': 123})

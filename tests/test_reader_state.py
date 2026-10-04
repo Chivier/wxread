@@ -4,18 +4,23 @@ import tempfile
 import unittest
 from cryptography.fernet import Fernet
 from reader_state import Checkpoint, refresh_login_if_changed
-from folder_reader import finished_page, ReadingBudget
+from folder_reader import caught_up_page, finished_page, ReadingBudget
 
 
 class FakeText:
-    def __init__(self, texts):
+    """Visible text plus the CSS classes of the reader's back cover, if shown."""
+    def __init__(self, texts, classes=()):
         self.texts = texts
+        self.classes = classes
+        self.first = self
     def get_by_text(self, text, exact):
-        self.text = text
-        self.exact = exact
+        self.visible = text in self.texts
+        return self
+    def locator(self, selector):
+        self.visible = selector.lstrip('.') in self.classes
         return self
     def is_visible(self):
-        return self.text in self.texts
+        return self.visible
 
 
 class StateTests(unittest.TestCase):
@@ -84,6 +89,25 @@ class StateTests(unittest.TestCase):
         self.assertTrue(finished_page(FakeText(['全书完'])))
         for content in [[], ['购买本章'], ['未完待续'], ['下一页'], ['小说中的一句全书完']]:
             self.assertFalse(finished_page(FakeText(content)))
+
+    def test_back_cover_class_separates_finished_book_from_waiting_serial(self):
+        # The site renders the labels with spaces ("全 书 完", "未 完 待 续").
+        finished = FakeText(['全 书 完'], ['readerFooter_ending_finish'])
+        serial = FakeText(['未 完 待 续'], ['readerFooter_ending_continue'])
+        self.assertTrue(finished_page(finished))
+        self.assertFalse(caught_up_page(finished))
+        self.assertTrue(caught_up_page(serial))
+        self.assertFalse(finished_page(serial))
+        self.assertFalse(caught_up_page(FakeText(['购买本章'])))
+
+    def test_parking_a_serial_keeps_only_todays_entries(self):
+        key = Fernet.generate_key().decode()
+        with tempfile.TemporaryDirectory() as directory:
+            state = Checkpoint(Path(directory) / 'checkpoint.enc', key, 'folder')
+            state.park('old', '2026-10-03')
+            state.park('serial', '2026-10-04')
+            self.assertEqual(state.data['caught_up'], {'serial': '2026-10-04'})
+            self.assertEqual(state.data['completed'], [])
 
 
 if __name__ == '__main__':

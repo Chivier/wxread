@@ -4,9 +4,9 @@ Actions 通过 `folder_reader.py` 打开微信读书「在读列表」，使用�
 
 ## 固定一本，读完才换
 
-每次运行重新获取文件夹内的书单，但始终继续加密检查点记录的当前书，不按日期轮换。只有网页出现明确的「全书完」标记，才记录为读完并选下一本。登录过期会尝试通过正常书架页面续期，再继续当前书；单段最多恢复三次。付费页面、无法恢复的登录或网络错误均停止，不算读完。连载读到最新章节、但没有「全书完」时也停止。
+每次运行重新获取文件夹内的书单，但始终继续加密检查点记录的当前书，不按日期轮换。只有网页出现明确的「全 书 完」封底，才记录为读完并选下一本。登录过期会尝试通过正常书架页面续期，再继续当前书；单段最多恢复三次。付费页面、无法恢复的登录或网络错误均停止，不算读完。连载读到最新章节（封底显示「未 完 待 续」）时不算读完，也不报错：当天剩余时长改读文件夹内下一本未读完的书，并把它作为当前书继续读完；连载在次日起重新成为候选，轮到它时接着读新章节。
 
-在手机 App 中移入书籍即加入候选；移出当前书视为主动取消，后续会选另一未读完书。已完成的书不会反复阅读来填满时长。文件夹为空或全部读完时停止。标题包含「三体」「三體」「Three Body / Three-Body」的书始终排除。
+在手机 App 中移入书籍即加入候选；移出当前书视为主动取消，后续会选另一未读完书。已完成的书不会反复阅读来填满时长。文件夹为空、全部读完或只剩已追平的连载时停止，当日目标未达成提醒会提示补充书籍。标题包含「三体」「三體」「Three Body / Three-Body」的书始终排除。
 
 跨段、跨天继续同一本，具体阅读位置由微信读书云端同步。检查点保存当前书、完成记录、每日累计和刷新后的浏览器登录状态，用独立密钥认证加密后保存在 Actions artifacts。Cookie、书名、截图和书架内容不进入公开日志。检查点下载或解密失败时停止，不重置进度。
 
@@ -33,7 +33,7 @@ Settings → Secrets and variables → Actions：
 | Variable | `DAILY_READ_SECONDS` | 默认 `21600`（六小时） |
 | Variable | `REQUIRE_READER_STATE` | 初始化后设为 `true`，丢失检查点时停止 |
 
-每段结束（包括正常异常退出）上传加密检查点，保留 90 天，每次恢复最新版本。逐次成功请求都在 runner 内原子更新加密文件；runner 被硬中断时可能退回上一次已上传的检查点，微信读书云端进度仍以网站为准。
+每段结束（包括正常异常退出）上传加密检查点，保留 90 天，每次恢复最新版本；下载失败会重试三次后才停止。逐次成功请求都在 runner 内原子更新加密文件；runner 被硬中断时可能退回上一次已上传的检查点，微信读书云端进度仍以网站为准。
 
 手动 Run workflow：`read_num=2` 仅执行一次约一分钟短测；留空则执行三段，并受每日总量限制。登录失效时更新 `WXREAD_CURL_BASH`；脚本发现 Secret 已变化后只重建登录会话，保留当前书、已完成记录和每日累计，不会删除整份进度。
 
@@ -43,7 +43,7 @@ Settings → Secrets and variables → Actions：
 
 完整运行结束后，`Daily target alert` 还会检查最终六小时断言。未达标且不是登录失效时创建另一条 Issue 并发微信提醒；后续一次完整运行达标会关闭它。短测不触发此提醒。
 
-Artoria 上的 `wxread-watchdog.timer` 每两小时运行一次 `watchdog.py`，检查最近一次 GitHub `schedule` 运行是否超过 8 小时。漏触发时创建一条单独的 GitHub Issue，触发同一条 PushPlus 通道，并发起一次完整补跑。Issue 评论记录补跑已被 GitHub 接收，监控器重试失败的派发，但不会对同一事故无限补跑。补跑和正常计划任务共用串行锁与每日时长上限；计划调度恢复后关闭 Issue。它使用 Artoria 已有的 `gh` 登录，PushPlus token 只保存在 GitHub Secret，不复制到 Artoria。若 Artoria 自身停机或 GitHub API 无法访问，这个检查也无法发出提醒；应定期检查 timer 状态。
+Artoria 上的 `wxread-watchdog.timer` 每两小时运行一次 `watchdog.py`，检查最近一次 GitHub `schedule` 运行是否超过 12 小时（GitHub 经常延迟或丢弃单次调度，实际间隔 9–11 小时仍属正常）。漏触发时创建一条单独的 GitHub Issue，触发同一条 PushPlus 通道，并发起一次完整补跑。Issue 评论记录补跑已被 GitHub 接收，监控器重试失败的派发，但不会对同一事故无限补跑。补跑和正常计划任务共用串行锁与每日时长上限；计划调度恢复后关闭 Issue。它使用 Artoria 已有的 `gh` 登录，PushPlus token 只保存在 GitHub Secret，不复制到 Artoria。若 Artoria 自身停机或 GitHub API 无法访问，这个检查也无法发出提醒；应定期检查 timer 状态。
 
 部署文件保存在 `ops/wxread-watchdog.service` 与 `ops/wxread-watchdog.timer`。在 Artoria 将 `watchdog.py`、`alert_issue.py` 放入 `~/.local/share/wxread-watchdog/`，将两个 unit 放入 `~/.config/systemd/user/`，然后运行 `systemctl --user daemon-reload`、`systemctl --user enable --now wxread-watchdog.timer` 和 `systemctl --user start wxread-watchdog.service`。用 `systemctl --user status wxread-watchdog.service` 与 `systemctl --user list-timers wxread-watchdog.timer` 验证。`Linger=yes` 使用户退出 SSH 后 timer 仍保持运行。
 
@@ -55,7 +55,9 @@ Artoria 上的 `wxread-watchdog.timer` 每两小时运行一次 `watchdog.py`，
 
 2026-09-19 排查修复：登录 Cookie 按网站实际的 `.weread.qq.com` 域和 `/` 路径导入，避免与服务器刷新后的同名 Cookie 并存。网页会在 120 秒没有检测到活跃操作后暂停计时；固定位置点击「下一页」虽然翻页，却会触发此问题。现用回车键激活同一个按钮，保留网页自身的计时、翻页和请求逻辑。日志分别统计成功回执与阅读位置变化，便于识别停滞。
 
-修复后十分钟云端测试成功（600 秒、21 次成功响应）：https://github.com/Chivier/wxread/actions/runs/35462432887 。这项测试验证持续上报与进度推进，不代表已验证完整六小时或排行榜入账。
+2026-10-04 排查修复：当前连载追到最新章节后，封底只有「未 完 待 续」，旧逻辑把它当作无法翻页的错误，之后每次运行都立即失败；同时旧的「全书完」文本匹配与网站实际渲染的带空格标签不一致。现按封底的 `readerFooter_ending_finish` / `readerFooter_ending_continue` 区分读完与连载待更新。看门狗阈值由 8 小时放宽到 12 小时，避免 GitHub 正常的调度抖动反复误报。
+
+2026-09-19 修复后十分钟云端测试成功（600 秒、21 次成功响应）：https://github.com/Chivier/wxread/actions/runs/35462432887 。这项测试验证持续上报与进度推进，不代表已验证完整六小时或排行榜入账。
 
 ```sh
 pip install cryptography==50.0.1

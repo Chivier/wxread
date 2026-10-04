@@ -50,13 +50,15 @@ class WatchdogTests(unittest.TestCase):
         with patch.object(watchdog, 'api', side_effect=fake_api), \
              patch.object(watchdog, 'dispatch_alert', side_effect=lambda repo, number: dispatches.append(number)), \
              patch.dict(os.environ, {'GITHUB_REPOSITORY': 'Chivier/wxread'}):
-            watchdog.main(datetime(2026, 9, 30, 9, 0, tzinfo=timezone.utc))
-            watchdog.main(datetime(2026, 9, 30, 10, 0, tzinfo=timezone.utc))
+            watchdog.main(datetime(2026, 9, 30, 11, 0, tzinfo=timezone.utc))
+            self.assertEqual(posts, 0)  # An 11-hour gap is ordinary GitHub jitter.
+            watchdog.main(datetime(2026, 9, 30, 13, 0, tzinfo=timezone.utc))
+            watchdog.main(datetime(2026, 9, 30, 14, 0, tzinfo=timezone.utc))
             self.assertEqual(posts, 1)
             self.assertEqual(dispatches, [5, 5])
             self.assertEqual(catchups, 1)
-            run['created_at'] = '2026-09-30T10:00:00Z'
-            watchdog.main(datetime(2026, 9, 30, 11, 0, tzinfo=timezone.utc))
+            run['created_at'] = '2026-09-30T14:00:00Z'
+            watchdog.main(datetime(2026, 9, 30, 15, 0, tzinfo=timezone.utc))
             self.assertEqual(issue['state'], 'closed')
 
 

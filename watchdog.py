@@ -4,10 +4,12 @@ import os
 
 from alert_issue import api, dispatch_alert
 
-TITLE = '微信读书定时任务超过 8 小时未触发'
+TITLE = '微信读书定时任务超过 12 小时未触发'
 MARKER = '<!-- wxread-schedule-watchdog-v1 -->'
 CATCHUP_MARKER = '<!-- wxread-schedule-catchup-dispatched-v1 -->'
-MAX_AGE = timedelta(hours=8)
+# GitHub routinely delays or drops single schedules; gaps of 9–11 hours occur
+# while the daily target is still met, so only a longer silence is an incident.
+MAX_AGE = timedelta(hours=12)
 
 
 def latest_scheduled_run(repo):
@@ -54,7 +56,7 @@ def main(now=None):
     issue = watchdog_issue(repo)
     if stale and not issue:
         run_line = f'最近一次计划运行：{run["html_url"]}（{run["created_at"]}）。' if run else '未找到计划运行。'
-        body = (f'{MARKER}\n\nGitHub Actions 已超过 8 小时没有触发微信读书计划任务。'
+        body = (f'{MARKER}\n\nGitHub Actions 已超过 12 小时没有触发微信读书计划任务。'
                 '请检查 Actions 是否启用、工作流文件与最近运行。此检查由 Artoria 独立执行。\n\n'
                 f'{run_line}\n')
         created = api(f'repos/{repo}/issues', 'POST', {

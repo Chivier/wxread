@@ -4,11 +4,12 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import time
 import zipfile
 
 
 def api(path):
-    result = subprocess.run(['gh', 'api', path], capture_output=True, check=True)
+    result = subprocess.run(['gh', 'api', path], capture_output=True, check=True, timeout=120)
     return result.stdout
 
 
@@ -39,8 +40,19 @@ def restore():
     print('Restored the latest encrypted checkpoint.')
 
 
+def restore_with_retries(delays=(10, 30, 90)):
+    """A transient GitHub API failure must not cost a whole reading session."""
+    for delay in delays:
+        try:
+            return restore()
+        except Exception as error:
+            print(f'Checkpoint download failed ({type(error).__name__}); retrying in {delay} seconds.')
+            time.sleep(delay)
+    return restore()
+
+
 if __name__ == '__main__':
     try:
-        restore()
+        restore_with_retries()
     except Exception:
         raise SystemExit('Checkpoint download failed; refusing to reset reading progress.') from None
